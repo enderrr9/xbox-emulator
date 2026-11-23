@@ -539,3 +539,22 @@ fn gpu_synthetic_amplification_args_entry_with_the_payload_pointer_launches_each
     assert_eq!(px, want);
     assert_eq!(samples, 3, "mesh groups launched");
 }
+
+#[test]
+fn gpu_synthetic_amplification_root_load_after_a_branch_still_uses_s0_s1() {
+    let root = RootSig { version: 2, flags: 0, params: vec![RootParam { visibility: 0, kind: RootParamKind::Constants { register: 0, space: 0, num32: 2 } }], num_static_samplers: 0, static_samplers: Vec::new() };
+    let mut head = vec![0xbf00_0000 | (6 << 16) | (4 << 8) | 4, sopp(5, 0)];
+    head.extend(smem(1, 12, 0, 0));
+    head.push(0xbf8c_c07f);
+    let (ta, tm) = synth_pair(&head, &[sop2(0, 10, 4, 13), sop1(3, 11, 12)], &dword_args(), Some(root));
+    assert!(ta.hlsl.contains("s12 = tb_rc0_0;") && !ta.hlsl.contains("s4 = tb_rc0_0;"), "{}", ta.hlsl);
+    let (px, fault, samples) = unsafe { render_pair(&ta, &tm, 2, &[2, 0x200]) }.unwrap_or_else(|e| panic!("{e}"));
+    let mut want = [[5, 6, 7, 8]; W];
+    want[0] = [0x200, 0, 0, 0x5a5a];
+    want[1] = [0x200, 1, 0, 0x5a5a];
+    want[4] = [0x201, 0, 1, 0x5a5a];
+    want[5] = [0x201, 1, 1, 0x5a5a];
+    assert_eq!(fault, [0, 0, 0], "global-memory misses");
+    assert_eq!(px, want);
+    assert_eq!(samples, 4, "mesh groups launched");
+}

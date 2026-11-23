@@ -1,6 +1,7 @@
 use super::{sreg_num, sreg_opnd, Emitter, Sym, BINDLESS};
 use crate::meta::RootParamKind;
 use crate::rdna2::{Enc, Insn, Opnd};
+use crate::Stage;
 use std::fmt::Write as _;
 
 pub(super) const RM_TABLE: u8 = 0x80;
@@ -28,6 +29,9 @@ impl Emitter<'_> {
     fn detect_rootmem(&self) -> bool {
         if !self.is_cs || self.ex.root_sig.as_ref().map_or(true, |r| r.params.is_empty()) {
             return false;
+        }
+        if self.ex.stage == Stage::Amplification {
+            return true;
         }
         let mut ptr: Vec<u8> = vec![0];
         for ins in &self.insns {
