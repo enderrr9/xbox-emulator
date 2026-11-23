@@ -950,9 +950,17 @@ mod tests {
             let mb = create_placed_x(g.dev, p as u64, &d, 0x1_0000, 0, core::ptr::null(), &mut b).expect("private placement aliased");
             assert_eq!(mb.kind, Kind::Title);
             assert_eq!(VirtualFree(p, 0, 0x8000), 0, "the PC runtime pins private memory under an open heap");
+            let heap = mb.heap as *mut c_void;
+            vcall!(heap, 1, fn() -> u32);
             vcall!(b, 2, fn() -> u32);
             flush();
-            assert_eq!(VirtualFree(p, 0, 0x8000), 1, "once the last placed resource is released its title heap must be gone");
+            assert_eq!(spans_starting_at(p as u64), 0, "the flush must drop the title span once its last placed resource is released");
+            assert_eq!(vcall!(heap, 2, fn() -> u32), 0, "after the flush nothing but the test may still reference the title heap");
+            let t = std::time::Instant::now();
+            while VirtualFree(p, 0, 0x8000) == 0 {
+                assert!(t.elapsed() < std::time::Duration::from_secs(10), "the OS still pins the memory 10 s after its title heap was destroyed");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
         }
     }
 
