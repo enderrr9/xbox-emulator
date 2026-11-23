@@ -469,7 +469,7 @@ fn durango_vertex_fetch_call_synthesizes_attributes_from_input_signature() {
 }
 
 #[test]
-fn amplification_dispatch_uses_the_y_and_z_group_counts() {
+fn amplification_dispatch_uses_the_y_group_count_and_not_the_payload_pointer() {
     let mut ex = shader(Stage::Amplification, &[S_ENDPGM], vec![], vec![], None);
     ex.gs_info = Some(GsInfo {
         input_primitive: 0,
@@ -488,7 +488,7 @@ fn amplification_dispatch_uses_the_y_and_z_group_counts() {
     });
     let t = translate(&ex).expect("amplification shader translates");
     assert!(
-        t.hlsl.contains("DispatchMesh(tb_args[0], max(tb_args[1], 1u), max(tb_args[2], 1u), tb_pl);"),
+        t.hlsl.contains("DispatchMesh(tb_args[0], max(tb_args[1], 1u), 1u, tb_pl);"),
         "{}",
         t.hlsl
     );

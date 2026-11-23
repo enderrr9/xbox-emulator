@@ -57,7 +57,7 @@ fn amp_hlsl_dispatches_from_the_args_entry() {
     assert_eq!(t.profile, "as_6_5");
     assert!(t.hlsl.lines().any(|l| l == "#define TB_AMP_GMEM 1"), "{}", t.hlsl);
     assert!(t.hlsl.contains("struct TbPayload { uint w[4]; };"), "{}", t.hlsl);
-    assert!(t.hlsl.contains("DispatchMesh(tb_args[0], max(tb_args[1], 1u), max(tb_args[2], 1u), tb_pl);"), "{}", t.hlsl);
+    assert!(t.hlsl.contains("DispatchMesh(tb_args[0], max(tb_args[1], 1u), 1u, tb_pl);"), "{}", t.hlsl);
     assert!(t.hlsl.contains("s2 = 0x10000000u; s3 = 0x20000000u; s4 = gid.x;"), "{}", t.hlsl);
     let t2 = hlsl_of("as2.dxbc");
     assert!(t2.hlsl.contains("struct TbPayload { uint w[12]; };"), "{}", t2.hlsl);
@@ -199,11 +199,11 @@ unsafe fn root_signature(gpu: &Gpu, consts: u32) -> *mut c_void {
 
 static WARP_RENDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-unsafe fn render(as_name: &str, ms_name: &str, groups: u32) -> Result<([[u32; 4]; W], [u32; 3]), String> {
+unsafe fn render(as_name: &str, ms_name: &str, groups: u32) -> Result<([[u32; 4]; W], [u32; 3], u64), String> {
     render_pair(&hlsl_of(as_name), &hlsl_of(ms_name), groups, &[])
 }
 
-unsafe fn render_pair(ta: &Translated, tm: &Translated, groups: u32, consts: &[u32]) -> Result<([[u32; 4]; W], [u32; 3]), String> {
+unsafe fn render_pair(ta: &Translated, tm: &Translated, groups: u32, consts: &[u32]) -> Result<([[u32; 4]; W], [u32; 3], u64), String> {
     let asb = dxc::compile(&ta.hlsl, &dxc::profile_for(ta.profile)).map_err(|e| format!("{e}\n{}", ta.hlsl))?;
     let msb = dxc::compile(&tm.hlsl, &dxc::profile_for(tm.profile)).map_err(|e| format!("{e}\n{}", tm.hlsl))?;
     let psb = dxc::compile(PS, "ps_6_5")?;
@@ -279,9 +279,14 @@ unsafe fn render_pair(ta: &Translated, tm: &Translated, groups: u32, consts: &[u
     vcall!(l, 21, fn(u32, *const f32) -> (), 1, vp.as_ptr());
     let sc = [0i32, 0, W as i32, 1];
     vcall!(l, 22, fn(u32, *const i32) -> (), 1, sc.as_ptr());
+    let qd = [0u32, 1, 0];
+    let mut qh: *mut c_void = core::ptr::null_mut();
+    assert!(vcall!(gpu.device, 39, fn(*const u32, *const Guid, *mut *mut c_void) -> i32, qd.as_ptr(), &d3d::IID_QUERYHEAP, &mut qh) >= 0, "CreateQueryHeap(occlusion)");
     let mut l6: *mut c_void = core::ptr::null_mut();
     assert!(vcall!(l, 0, fn(*const Guid, *mut *mut c_void) -> i32, &IID_LIST6, &mut l6) >= 0, "ID3D12GraphicsCommandList6");
+    vcall!(l, 52, fn(*mut c_void, u32, u32) -> (), qh, 0, 0);
     vcall!(l6, 79, fn(u32, u32, u32) -> (), groups, 1, 1);
+    vcall!(l, 53, fn(*mut c_void, u32, u32) -> (), qh, 0, 0);
     d3d::release(l6);
     gpu.barrier(rt, 4, d3d::COPY_SOURCE);
     gpu.barrier(fault, UAV_STATE, d3d::COPY_SOURCE);
@@ -297,8 +302,10 @@ unsafe fn render_pair(ta: &Translated, tm: &Translated, groups: u32, consts: &[u
     src[0..8].copy_from_slice(&(rt as u64).to_le_bytes());
     vcall!(l, 16, fn(*const u8, u32, u32, u32, *const u8, *const c_void) -> (), dst2.as_ptr(), 0, 0, 0, src.as_ptr(), core::ptr::null());
     vcall!(l, 15, fn(*mut c_void, u64, *mut c_void, u64, u64) -> (), rb, 256, fault, 0, 16);
+    vcall!(l, 54, fn(*mut c_void, u32, u32, u32, *mut c_void, u64) -> (), qh, 0, 0, 1, rb, 272);
     gpu.submit()?;
     let b = Gpu::map_read(rb, 512).ok_or("map readback")?;
+    d3d::release(qh);
     d3d::release(pso);
     d3d::release(dev2);
     let u = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
@@ -308,13 +315,13 @@ unsafe fn render_pair(ta: &Translated, tm: &Translated, groups: u32, consts: &[u
             p[c] = u(i * 16 + c * 4);
         }
     }
-    Ok((px, [u(256), u(260), u(264)]))
+    Ok((px, [u(256), u(260), u(264)], u64::from(u(272)) | (u64::from(u(276)) << 32)))
 }
 
 #[test]
 #[cfg_attr(not(tombox_fixtures_console_xsc), ignore = "needs analysis/shaders/console_xsc fixtures extracted from local title dumps")]
 fn gpu_console_amplification_feeds_payload_and_group_counts_to_the_mesh_stage() {
-    let (px, fault) = unsafe { render("as3.dxbc", "ms3.dxbc", 2) }.unwrap_or_else(|e| panic!("{e}"));
+    let (px, fault, _) = unsafe { render("as3.dxbc", "ms3.dxbc", 2) }.unwrap_or_else(|e| panic!("{e}"));
     let clear = [5, 6, 7, 8];
     let mut want = [clear; W];
     want[0] = [0x100, 0, 0, 0x5a5a];
@@ -411,7 +418,17 @@ fn synth(stage: Stage, words: &[u32], mesh: MeshInfo, outs: Vec<SigElement>, roo
     }
 }
 
-fn synth_as(head: &[u32], tag_and_count: &[u32]) -> Vec<u32> {
+fn dword_args() -> Vec<u32> {
+    global(28, 10, 8, 2, 0).to_vec()
+}
+
+fn console_args() -> Vec<u32> {
+    let mut w = vec![sop2(33, 14, 6, ic(4)), vop1(1, 12, 11), vop1(1, 13, ic(0)), vop1(1, 14, 15), vop1(1, 15, 14)];
+    w.extend(global(30, 10, 12, 2, 0));
+    w
+}
+
+fn synth_as(head: &[u32], tag_and_count: &[u32], args: &[u32]) -> Vec<u32> {
     let mut w = head.to_vec();
     w.extend([sop1(3, 6, 3), sop1(3, 7, ic(0)), sop1(3, 3, ic(0))]);
     w.extend([sop2(31, 2, 2, ic(8)), sop2(31, 6, 6, ic(8))]);
@@ -420,7 +437,7 @@ fn synth_as(head: &[u32], tag_and_count: &[u32]) -> Vec<u32> {
     w.extend(tag_and_count);
     w.extend([vop1(1, 10, ic(0)), vop1(1, 4, 9), vop1(1, 5, 10), vop1(1, 6, 4), vop1(1, 7, LIT), 0x5a5a, vop1(1, 8, 11)]);
     w.extend(global(30, 10, 4, 6, 0));
-    w.extend(global(28, 10, 8, 2, 0));
+    w.extend(args);
     w.push(S_ENDPGM);
     w
 }
@@ -449,11 +466,11 @@ fn synth_ms() -> Vec<u32> {
     w
 }
 
-fn synth_pair(head: &[u32], tag_and_count: &[u32], root: Option<RootSig>) -> (Translated, Translated) {
+fn synth_pair(head: &[u32], tag_and_count: &[u32], args: &[u32], root: Option<RootSig>) -> (Translated, Translated) {
     let a = MeshInfo { stage: 14, groupshared_bytes: 0, payload_bytes: 16, max_vertices: 0, max_primitives: 0, prim_vectors: 0, topology: 0, num_threads: [32, 1, 1] };
     let m = MeshInfo { stage: 13, groupshared_bytes: 0, payload_bytes: 16, max_vertices: 128, max_primitives: 128, prim_vectors: 0, topology: 2, num_threads: [128, 1, 1] };
     let outs = vec![sig("SV_Position", 1, 3, 0, 0xf), sig("TEXCOORD", 0, 1, 1, 0xf)];
-    let ta = translate(&synth(Stage::Amplification, &synth_as(head, tag_and_count), a, vec![], root)).unwrap_or_else(|e| panic!("synthetic AS: {e}"));
+    let ta = translate(&synth(Stage::Amplification, &synth_as(head, tag_and_count, args), a, vec![], root)).unwrap_or_else(|e| panic!("synthetic AS: {e}"));
     let tm = translate(&synth(Stage::Mesh, &synth_ms(), m, outs, None)).unwrap_or_else(|e| panic!("synthetic MS: {e}"));
     (ta, tm)
 }
@@ -461,7 +478,7 @@ fn synth_pair(head: &[u32], tag_and_count: &[u32], root: Option<RootSig>) -> (Tr
 #[test]
 fn synthetic_pair_disassembles_to_the_ring_abi_shape() {
     let dis = |w: &[u32]| rdna2::disassemble(&w.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>());
-    let a = dis(&synth_as(&smem(1, 12, 0, 0), &[]));
+    let a = dis(&synth_as(&smem(1, 12, 0, 0), &[], &dword_args()));
     let m = dis(&synth_ms());
     for (insns, want) in [
         (&a, &["s_load_dwordx2", "s_lshl_b64", "s_addc_u32", "flat_store_dwordx4", "flat_store_dword", "s_endpgm"][..]),
@@ -479,16 +496,17 @@ fn synthetic_pair_disassembles_to_the_ring_abi_shape() {
 
 #[test]
 fn gpu_synthetic_amplification_feeds_payload_and_group_counts_to_the_mesh_stage() {
-    let (ta, tm) = synth_pair(&[], &[sop2(0, 10, 4, LIT), 0x100, sop2(0, 11, 4, ic(1))], None);
+    let (ta, tm) = synth_pair(&[], &[sop2(0, 10, 4, LIT), 0x100, sop2(0, 11, 4, ic(1))], &dword_args(), None);
     assert!(ta.hlsl.contains("struct TbPayload { uint w[4]; };"), "{}", ta.hlsl);
     assert!(tm.hlsl.contains("in payload TbPayload tb_pl"), "{}", tm.hlsl);
-    let (px, fault) = unsafe { render_pair(&ta, &tm, 2, &[]) }.unwrap_or_else(|e| panic!("{e}"));
+    let (px, fault, samples) = unsafe { render_pair(&ta, &tm, 2, &[]) }.unwrap_or_else(|e| panic!("{e}"));
     let mut want = [[5, 6, 7, 8]; W];
     want[0] = [0x100, 0, 0, 0x5a5a];
     want[4] = [0x101, 0, 1, 0x5a5a];
     want[5] = [0x101, 1, 1, 0x5a5a];
     assert_eq!(fault, [0, 0, 0], "global-memory misses");
     assert_eq!(px, want);
+    assert_eq!(samples, 3, "mesh groups launched");
 }
 
 #[test]
@@ -496,9 +514,9 @@ fn gpu_synthetic_amplification_reads_root_constants_through_s0_s1() {
     let root = RootSig { version: 2, flags: 0, params: vec![RootParam { visibility: 0, kind: RootParamKind::Constants { register: 0, space: 0, num32: 2 } }], num_static_samplers: 0, static_samplers: Vec::new() };
     let mut head = smem(1, 12, 0, 0).to_vec();
     head.push(0xbf8c_c07f);
-    let (ta, tm) = synth_pair(&head, &[sop2(0, 10, 4, 13), sop1(3, 11, 12)], Some(root));
+    let (ta, tm) = synth_pair(&head, &[sop2(0, 10, 4, 13), sop1(3, 11, 12)], &dword_args(), Some(root));
     assert!(ta.hlsl.contains("cbuffer TB_RC0 : register(b0, space0)"), "{}", ta.hlsl);
-    let (px, fault) = unsafe { render_pair(&ta, &tm, 2, &[2, 0x200]) }.unwrap_or_else(|e| panic!("{e}"));
+    let (px, fault, samples) = unsafe { render_pair(&ta, &tm, 2, &[2, 0x200]) }.unwrap_or_else(|e| panic!("{e}"));
     let mut want = [[5, 6, 7, 8]; W];
     want[0] = [0x200, 0, 0, 0x5a5a];
     want[1] = [0x200, 1, 0, 0x5a5a];
@@ -506,4 +524,18 @@ fn gpu_synthetic_amplification_reads_root_constants_through_s0_s1() {
     want[5] = [0x201, 1, 1, 0x5a5a];
     assert_eq!(fault, [0, 0, 0], "global-memory misses");
     assert_eq!(px, want);
+    assert_eq!(samples, 4, "mesh groups launched");
+}
+
+#[test]
+fn gpu_synthetic_amplification_args_entry_with_the_payload_pointer_launches_each_mesh_group_once() {
+    let (ta, tm) = synth_pair(&[], &[sop2(0, 10, 4, LIT), 0x100, sop2(0, 11, 4, ic(1))], &console_args(), None);
+    let (px, fault, samples) = unsafe { render_pair(&ta, &tm, 2, &[]) }.unwrap_or_else(|e| panic!("{e}"));
+    let mut want = [[5, 6, 7, 8]; W];
+    want[0] = [0x100, 0, 0, 0x5a5a];
+    want[4] = [0x101, 0, 1, 0x5a5a];
+    want[5] = [0x101, 1, 1, 0x5a5a];
+    assert_eq!(fault, [0, 0, 0], "global-memory misses");
+    assert_eq!(px, want);
+    assert_eq!(samples, 3, "mesh groups launched");
 }
