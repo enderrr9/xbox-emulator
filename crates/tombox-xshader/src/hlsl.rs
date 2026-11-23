@@ -3404,7 +3404,7 @@ impl<'a> Emitter<'a> {
                 }
                 Ok(())
             }
-            Enc::Vop3 if matches!(ins.op, 0x200 | 0x201 | 0x202) => self.emit_interp(ins, is_ps),
+            Enc::Vop3 if matches!(ins.op, 0x200 | 0x201 | 0x202 | 0x342 | 0x343 | 0x35a) => self.emit_interp(ins, is_ps),
             Enc::Vop2 | Enc::Vop1 | Enc::Vop3 | Enc::Vopc => {
                 self.d16 = None;
                 if ins.aux.sdwa.is_none() && dst16(&ins.mnemonic) {
@@ -4358,6 +4358,16 @@ impl<'a> Emitter<'a> {
     fn emit_interp(&mut self, ins: &Insn, is_ps: bool) -> Result<(), String> {
         if !is_ps {
             return Err("v_interp outside a pixel shader".into());
+        }
+        if ins.enc == Enc::Vop3 && matches!(ins.op, 0x342 | 0x343 | 0x35a) {
+            let d1 = ins.raw.get(1).copied().unwrap_or(0);
+            return Err(format!(
+                "{} attr{}.{} {} half: the packing of 16-bit attributes into LDS dword halves is not established",
+                ins.mnemonic,
+                ins.aux.imm,
+                XYZW[(ins.aux.imm2 & 3) as usize],
+                if d1 & 0x100 != 0 { "high" } else { "low" }
+            ));
         }
         if ins.enc == Enc::Vop3 {
             let w = ins.raw[0];

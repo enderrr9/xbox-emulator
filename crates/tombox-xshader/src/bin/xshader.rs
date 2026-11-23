@@ -133,6 +133,10 @@ fn main() -> ExitCode {
         let aux = match ins.enc {
             tombox_xshader::rdna2::Enc::Exp => format!(" [target={} en={:#06b}]", ins.aux.imm, ins.aux.mask),
             tombox_xshader::rdna2::Enc::Vinterp => format!(" [attr{}.{}]", ins.aux.imm, ins.aux.imm2),
+            tombox_xshader::rdna2::Enc::Vop3 if matches!(ins.op, 0x200 | 0x201 | 0x202 | 0x342 | 0x343 | 0x35a) => {
+                let high = ins.raw.get(1).is_some_and(|d1| d1 & 0x100 != 0);
+                format!(" [attr{}.{}{}]", ins.aux.imm, ins.aux.imm2, if high { " high" } else { "" })
+            }
             tombox_xshader::rdna2::Enc::Smem => format!(" [off={:#x}]", ins.aux.imm),
             tombox_xshader::rdna2::Enc::Sopp | tombox_xshader::rdna2::Enc::Sopk => format!(" [imm={}]", ins.aux.imm),
             _ => String::new(),

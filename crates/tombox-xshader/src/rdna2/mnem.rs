@@ -168,6 +168,7 @@ pub fn vop3(op: u32) -> Option<&'static str> {
     }
     Some(match op {
         0x200 => "v_interp_p1_f32", 0x201 => "v_interp_p2_f32", 0x202 => "v_interp_mov_f32",
+        0x342 => "v_interp_p1ll_f16", 0x343 => "v_interp_p1lv_f16", 0x35a => "v_interp_p2_f16",
         0x140 => "v_mad_legacy_f32", 0x141 => "v_mad_f32", 0x142 => "v_mad_i32_i24",
         0x143 => "v_mad_u32_u24", 0x144 => "v_cubeid_f32", 0x145 => "v_cubesc_f32",
         0x146 => "v_cubetc_f32", 0x147 => "v_cubema_f32", 0x148 => "v_bfe_u32", 0x149 => "v_bfe_i32",

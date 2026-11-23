@@ -467,6 +467,52 @@ fn vop3_interp_with_modifiers_is_refused() {
     assert!(err.contains("v_interp_p1_f32 VOP3 form with abs/neg/clamp/omod/opsel modifiers is not supported"), "{err}");
 }
 
+fn vop3_interp16_words(op: u32, vdst: u32, attr: u32, chan: u32, high: u32, vsrc: u32, vsrc2: u32) -> [u32; 2] {
+    [0xd400_0000 | (op << 16) | vdst, attr | (chan << 6) | (high << 8) | ((256 + vsrc) << 9) | ((256 + vsrc2) << 18)]
+}
+
+#[test]
+fn vop3_interp_f16_forms_decode_attr_chan_and_operands() {
+    use tombox_xshader::rdna2::{disassemble, Opnd};
+    let cases = [
+        (0x342, "v_interp_p1ll_f16", vec![Opnd::Vgpr(1)]),
+        (0x343, "v_interp_p1lv_f16", vec![Opnd::Vgpr(1), Opnd::Vgpr(5)]),
+        (0x35a, "v_interp_p2_f16", vec![Opnd::Vgpr(1), Opnd::Vgpr(5)]),
+    ];
+    for (op, name, src) in cases {
+        let isa: Vec<u8> = vop3_interp16_words(op, 4, 3, 2, 1, 1, 5).iter().flat_map(|w| w.to_le_bytes()).collect();
+        let ins = disassemble(&isa).into_iter().next().unwrap();
+        assert_eq!(ins.mnemonic, name);
+        assert_eq!(ins.dwords, 2, "{name}");
+        assert_eq!(ins.dst, vec![Opnd::Vgpr(4)], "{name}");
+        assert_eq!(ins.src, src, "{name}");
+        assert_eq!((ins.aux.imm, ins.aux.imm2), (3, 2), "{name} attr/chan");
+    }
+}
+
+#[test]
+fn vop3_interp_f16_forms_are_refused_with_attr_chan_and_half() {
+    let cases = [
+        (0x342, 0, 0, 0, "v_interp_p1ll_f16 attr0.x low half"),
+        (0x342, 0, 1, 1, "v_interp_p1ll_f16 attr0.y high half"),
+        (0x343, 0, 2, 0, "v_interp_p1lv_f16 attr0.z low half"),
+        (0x35a, 0, 3, 1, "v_interp_p2_f16 attr0.w high half"),
+    ];
+    for (op, attr, chan, high, want) in cases {
+        let (ins, outs) = interp_signature();
+        let mut words = vop3_interp16_words(op, 0, attr, chan, high, 0, 1).to_vec();
+        words.extend_from_slice(&[0xf800_1c01, 0x0000_0000, S_ENDPGM]);
+        let err = match translate(&shader(Stage::Pixel, &words, ins, outs, None)) {
+            Ok(t) => panic!("{want}: translated\n{}", t.hlsl),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains(&format!("{want}: the packing of 16-bit attributes into LDS dword halves is not established")),
+            "{err}"
+        );
+    }
+}
+
 #[test]
 fn pixel_attribute_past_the_interpolants_reads_the_layer_sysval() {
     let words = [0xc802_0002, 0xf800_1c03, 0x0000_0000, S_ENDPGM];
